@@ -18,17 +18,18 @@ package workqueue
 
 import (
 	"fmt"
+	"math/rand"
 	"reflect"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/util/clock"
 )
 
 func TestSimpleQueue(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
-	q := newDelayingQueue(fakeClock, "")
+	q := NewDelayingQueueWithCustomClock(fakeClock, "")
 
 	first := "foo"
 
@@ -70,7 +71,7 @@ func TestSimpleQueue(t *testing.T) {
 
 func TestDeduping(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
-	q := newDelayingQueue(fakeClock, "")
+	q := NewDelayingQueueWithCustomClock(fakeClock, "")
 
 	first := "foo"
 
@@ -129,7 +130,7 @@ func TestDeduping(t *testing.T) {
 
 func TestAddTwoFireEarly(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
-	q := newDelayingQueue(fakeClock, "")
+	q := NewDelayingQueueWithCustomClock(fakeClock, "")
 
 	first := "foo"
 	second := "bar"
@@ -178,7 +179,7 @@ func TestAddTwoFireEarly(t *testing.T) {
 
 func TestCopyShifting(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
-	q := newDelayingQueue(fakeClock, "")
+	q := NewDelayingQueueWithCustomClock(fakeClock, "")
 
 	first := "foo"
 	second := "bar"
@@ -211,6 +212,23 @@ func TestCopyShifting(t *testing.T) {
 	actualThird, _ := q.Get()
 	if !reflect.DeepEqual(actualThird, first) {
 		t.Errorf("expected %v, got %v", first, actualThird)
+	}
+}
+
+func BenchmarkDelayingQueue_AddAfter(b *testing.B) {
+	fakeClock := clock.NewFakeClock(time.Now())
+	q := NewDelayingQueueWithCustomClock(fakeClock, "")
+
+	// Add items
+	for n := 0; n < b.N; n++ {
+		data := fmt.Sprintf("%d", n)
+		q.AddAfter(data, time.Duration(rand.Int63n(int64(10*time.Minute))))
+	}
+
+	// Exercise item removal as well
+	fakeClock.Step(11 * time.Minute)
+	for n := 0; n < b.N; n++ {
+		_, _ = q.Get()
 	}
 }
 

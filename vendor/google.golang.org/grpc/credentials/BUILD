@@ -1,20 +1,20 @@
-package(default_visibility = ["//visibility:public"])
-
-licenses(["notice"])
-
-load(
-    "@io_bazel_rules_go//go:def.bzl",
-    "go_library",
-)
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "go_default_library",
     srcs = [
         "credentials.go",
-        "credentials_util_go17.go",
+        "go12.go",
+        "tls.go",
     ],
-    tags = ["automanaged"],
-    deps = ["//vendor/golang.org/x/net/context:go_default_library"],
+    importmap = "k8s.io/kubernetes/vendor/google.golang.org/grpc/credentials",
+    importpath = "google.golang.org/grpc/credentials",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//vendor/github.com/golang/protobuf/proto:go_default_library",
+        "//vendor/google.golang.org/grpc/credentials/internal:go_default_library",
+        "//vendor/google.golang.org/grpc/internal:go_default_library",
+    ],
 )
 
 filegroup(
@@ -26,6 +26,10 @@ filegroup(
 
 filegroup(
     name = "all-srcs",
-    srcs = [":package-srcs"],
+    srcs = [
+        ":package-srcs",
+        "//vendor/google.golang.org/grpc/credentials/internal:all-srcs",
+    ],
     tags = ["automanaged"],
+    visibility = ["//visibility:public"],
 )

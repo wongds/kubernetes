@@ -22,11 +22,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/davecgh/go-spew/spew"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/sets"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 type fakeListener struct {
@@ -77,7 +79,7 @@ func newFakeHTTPServerFactory() *fakeHTTPServerFactory {
 	return &fakeHTTPServerFactory{}
 }
 
-func (fake *fakeHTTPServerFactory) New(addr string, handler http.Handler) HTTPServer {
+func (fake *fakeHTTPServerFactory) New(addr string, handler http.Handler) httpServer {
 	return &fakeHTTPServer{
 		addr:    addr,
 		handler: handler,
@@ -108,11 +110,16 @@ type hcPayload struct {
 	LocalEndpoints int
 }
 
+type healthzPayload struct {
+	LastUpdated string
+	CurrentTime string
+}
+
 func TestServer(t *testing.T) {
 	listener := newFakeListener()
 	httpFactory := newFakeHTTPServerFactory()
 
-	hcsi := NewServer("hostname", nil, listener, httpFactory)
+	hcsi := newServiceHealthServer("hostname", nil, listener, httpFactory)
 	hcs := hcsi.(*server)
 	if len(hcs.services) != 0 {
 		t.Errorf("expected 0 services, got %d", len(hcs.services))
@@ -353,5 +360,54 @@ func testHandler(hcs *server, nsn types.NamespacedName, status int, endpoints in
 	}
 	if payload.LocalEndpoints != endpoints {
 		t.Errorf("expected %d endpoints, got %d", endpoints, payload.LocalEndpoints)
+	}
+}
+
+func TestHealthzServer(t *testing.T) {
+	listener := newFakeListener()
+	httpFactory := newFakeHTTPServerFactory()
+	fakeClock := clock.NewFakeClock(time.Now())
+
+	hs := newProxierHealthServer(listener, httpFactory, fakeClock, "127.0.0.1:10256", 10*time.Second, nil, nil)
+	server := hs.httpFactory.New(hs.addr, healthzHandler{hs: hs})
+
+	// Should return 200 "OK" by default.
+	testHealthzHandler(server, http.StatusOK, t)
+
+	// Should return 200 "OK" after first update
+	hs.Updated()
+	testHealthzHandler(server, http.StatusOK, t)
+
+	// Should continue to return 200 "OK" as long as no further updates are queued
+	fakeClock.Step(25 * time.Second)
+	testHealthzHandler(server, http.StatusOK, t)
+
+	// Should return 503 "ServiceUnavailable" if exceed max update-processing time
+	hs.QueuedUpdate()
+	fakeClock.Step(25 * time.Second)
+	testHealthzHandler(server, http.StatusServiceUnavailable, t)
+
+	// Should return 200 "OK" after processing update
+	hs.Updated()
+	fakeClock.Step(5 * time.Second)
+	testHealthzHandler(server, http.StatusOK, t)
+}
+
+func testHealthzHandler(server httpServer, status int, t *testing.T) {
+	handler := server.(*fakeHTTPServer).handler
+	req, err := http.NewRequest("GET", "/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != status {
+		t.Errorf("expected status code %v, got %v", status, resp.Code)
+	}
+	var payload healthzPayload
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
 	}
 }

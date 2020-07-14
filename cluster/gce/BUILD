@@ -1,26 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
-load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
-
-pkg_tar(
-    name = "gci-trusty-manifests",
-    files = [
-        "container-linux/configure-helper.sh",
-        "gci/configure-helper.sh",
-        "gci/health-monitor.sh",
-        "gci/mounter/mounter",
-    ],
-    mode = "0755",
-    strip_prefix = ".",
-    # pkg_tar doesn't support renaming the files we add, so instead create symlinks.
-    symlinks = {
-        "container-linux-configure-helper.sh": "container-linux/configure-helper.sh",
-        "gci-configure-helper.sh": "gci/configure-helper.sh",
-        "health-monitor.sh": "gci/health-monitor.sh",
-        "gci-mounter": "gci/mounter/mounter",
-        "trusty-configure-helper.sh": "trusty/configure-helper.sh",
-    },
-)
+load("@io_k8s_repo_infra//defs:build.bzl", "release_filegroup")
+load("@io_k8s_repo_infra//defs:pkg.bzl", "pkg_tar")
 
 filegroup(
     name = "package-srcs",
@@ -31,6 +12,12 @@ filegroup(
 
 filegroup(
     name = "all-srcs",
-    srcs = [":package-srcs"],
+    srcs = [
+        ":package-srcs",
+        "//cluster/gce/addons:all-srcs",
+        "//cluster/gce/gci:all-srcs",
+        "//cluster/gce/manifests:all-srcs",
+        "//cluster/gce/windows:all-srcs",
+    ],
     tags = ["automanaged"],
 )

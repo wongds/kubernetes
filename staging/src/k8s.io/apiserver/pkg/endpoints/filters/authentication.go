@@ -17,101 +17,79 @@ limitations under the License.
 package filters
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
-	"strings"
+	"time"
 
-	"github.com/golang/glog"
-	"github.com/prometheus/client_golang/prometheus"
-
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/klog/v2"
 )
-
-var (
-	authenticatedUserCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "authenticated_user_requests",
-			Help: "Counter of authenticated requests broken out by username.",
-		},
-		[]string{"username"},
-	)
-)
-
-func init() {
-	prometheus.MustRegister(authenticatedUserCounter)
-}
 
 // WithAuthentication creates an http handler that tries to authenticate the given request as a user, and then
 // stores any such user found onto the provided context for the request. If authentication fails or returns an error
 // the failed handler is used. On success, "Authorization" header is removed from the request and handler
 // is invoked to serve the request.
-func WithAuthentication(handler http.Handler, mapper genericapirequest.RequestContextMapper, auth authenticator.Request, failed http.Handler) http.Handler {
+func WithAuthentication(handler http.Handler, auth authenticator.Request, failed http.Handler, apiAuds authenticator.Audiences) http.Handler {
 	if auth == nil {
-		glog.Warningf("Authentication is disabled")
+		klog.Warningf("Authentication is disabled")
 		return handler
 	}
-	return genericapirequest.WithRequestContext(
-		http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			user, ok, err := auth.AuthenticateRequest(req)
-			if err != nil || !ok {
-				if err != nil {
-					glog.Errorf("Unable to authenticate the request due to an error: %v", err)
-				}
-				failed.ServeHTTP(w, req)
-				return
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		authenticationStart := time.Now()
+
+		if len(apiAuds) > 0 {
+			req = req.WithContext(authenticator.WithAudiences(req.Context(), apiAuds))
+		}
+		resp, ok, err := auth.AuthenticateRequest(req)
+		traceFilterStep(req.Context(), "Authenticate check done")
+		defer recordAuthMetrics(resp, ok, err, apiAuds, authenticationStart)
+		if err != nil || !ok {
+			if err != nil {
+				klog.Errorf("Unable to authenticate the request due to an error: %v", err)
 			}
+			failed.ServeHTTP(w, req)
+			return
+		}
 
-			// authorization header is not required anymore in case of a successful authentication.
-			req.Header.Del("Authorization")
+		if !audiencesAreAcceptable(apiAuds, resp.Audiences) {
+			err = fmt.Errorf("unable to match the audience: %v , accepted: %v", resp.Audiences, apiAuds)
+			klog.Error(err)
+			failed.ServeHTTP(w, req)
+			return
+		}
 
-			if ctx, ok := mapper.Get(req); ok {
-				mapper.Update(req, genericapirequest.WithUser(ctx, user))
-			}
+		// authorization header is not required anymore in case of a successful authentication.
+		req.Header.Del("Authorization")
 
-			authenticatedUserCounter.WithLabelValues(compressUsername(user.GetName())).Inc()
-
-			handler.ServeHTTP(w, req)
-		}),
-		mapper,
-	)
+		req = req.WithContext(genericapirequest.WithUser(req.Context(), resp.User))
+		handler.ServeHTTP(w, req)
+	})
 }
 
-func Unauthorized(supportsBasicAuth bool) http.HandlerFunc {
-	if supportsBasicAuth {
-		return unauthorizedBasicAuth
+func Unauthorized(s runtime.NegotiatedSerializer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
+		requestInfo, found := genericapirequest.RequestInfoFrom(ctx)
+		if !found {
+			responsewriters.InternalError(w, req, errors.New("no RequestInfo found in the context"))
+			return
+		}
+
+		gv := schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}
+		responsewriters.ErrorNegotiated(apierrors.NewUnauthorized("Unauthorized"), s, gv, w, req)
+	})
+}
+
+func audiencesAreAcceptable(apiAuds, responseAudiences authenticator.Audiences) bool {
+	if len(apiAuds) == 0 || len(responseAudiences) == 0 {
+		return true
 	}
-	return unauthorized
-}
 
-// unauthorizedBasicAuth serves an unauthorized message to clients.
-func unauthorizedBasicAuth(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="kubernetes-master"`)
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
-}
-
-// unauthorized serves an unauthorized message to clients.
-func unauthorized(w http.ResponseWriter, req *http.Request) {
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
-}
-
-// compressUsername maps all possible usernames onto a small set of categories
-// of usernames. This is done both to limit the cardinality of the
-// authorized_user_requests metric, and to avoid pushing actual usernames in the
-// metric.
-func compressUsername(username string) string {
-	switch {
-	// Known internal identities.
-	case username == "admin" ||
-		username == "client" ||
-		username == "kube_proxy" ||
-		username == "kubelet" ||
-		username == "system:serviceaccount:kube-system:default":
-		return username
-	// Probably an email address.
-	case strings.Contains(username, "@"):
-		return "email_id"
-	// Anything else (custom service accounts, custom external identities, etc.)
-	default:
-		return "other"
-	}
+	return len(apiAuds.Intersect(responseAudiences)) > 0
 }

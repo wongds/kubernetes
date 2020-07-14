@@ -34,8 +34,8 @@ func (s objectReference) String() string {
 	return fmt.Sprintf("[%s/%s, namespace: %s, name: %s, uid: %s]", s.APIVersion, s.Kind, s.Namespace, s.Name, s.UID)
 }
 
-// The single-threaded GraphBuilder.processEvent() is the sole writer of the
-// nodes. The multi-threaded GarbageCollector.processItem() reads the nodes.
+// The single-threaded GraphBuilder.processGraphChanges() is the sole writer of the
+// nodes. The multi-threaded GarbageCollector.attemptToDeleteItem() reads the nodes.
 // WARNING: node has different locks on different fields. setters and getters
 // use the respective locks, so the return values of the getters can be
 // inconsistent.
@@ -46,13 +46,16 @@ type node struct {
 	// dependents are the nodes that have node.identity as a
 	// metadata.ownerReference.
 	dependents map[*node]struct{}
-	// this is set by processEvent() if the object has non-nil DeletionTimestamp
+	// this is set by processGraphChanges() if the object has non-nil DeletionTimestamp
 	// and has the FinalizerDeleteDependents.
 	deletingDependents     bool
 	deletingDependentsLock sync.RWMutex
 	// this records if the object's deletionTimestamp is non-nil.
 	beingDeleted     bool
 	beingDeletedLock sync.RWMutex
+	// this records if the object was constructed virtually and never observed via informer event
+	virtual     bool
+	virtualLock sync.RWMutex
 	// when processing an Update event, we need to compare the updated
 	// ownerReferences with the owners recorded in the graph.
 	owners []metav1.OwnerReference
@@ -72,6 +75,17 @@ func (n *node) isBeingDeleted() bool {
 	return n.beingDeleted
 }
 
+func (n *node) markObserved() {
+	n.virtualLock.Lock()
+	defer n.virtualLock.Unlock()
+	n.virtual = false
+}
+func (n *node) isObserved() bool {
+	n.virtualLock.RLock()
+	defer n.virtualLock.RUnlock()
+	return !n.virtual
+}
+
 func (n *node) markDeletingDependents() {
 	n.deletingDependentsLock.Lock()
 	defer n.deletingDependentsLock.Unlock()
@@ -84,32 +98,32 @@ func (n *node) isDeletingDependents() bool {
 	return n.deletingDependents
 }
 
-func (ownerNode *node) addDependent(dependent *node) {
-	ownerNode.dependentsLock.Lock()
-	defer ownerNode.dependentsLock.Unlock()
-	ownerNode.dependents[dependent] = struct{}{}
+func (n *node) addDependent(dependent *node) {
+	n.dependentsLock.Lock()
+	defer n.dependentsLock.Unlock()
+	n.dependents[dependent] = struct{}{}
 }
 
-func (ownerNode *node) deleteDependent(dependent *node) {
-	ownerNode.dependentsLock.Lock()
-	defer ownerNode.dependentsLock.Unlock()
-	delete(ownerNode.dependents, dependent)
+func (n *node) deleteDependent(dependent *node) {
+	n.dependentsLock.Lock()
+	defer n.dependentsLock.Unlock()
+	delete(n.dependents, dependent)
 }
 
-func (ownerNode *node) dependentsLength() int {
-	ownerNode.dependentsLock.RLock()
-	defer ownerNode.dependentsLock.RUnlock()
-	return len(ownerNode.dependents)
+func (n *node) dependentsLength() int {
+	n.dependentsLock.RLock()
+	defer n.dependentsLock.RUnlock()
+	return len(n.dependents)
 }
 
 // Note that this function does not provide any synchronization guarantees;
 // items could be added to or removed from ownerNode.dependents the moment this
 // function returns.
-func (ownerNode *node) getDependents() []*node {
-	ownerNode.dependentsLock.RLock()
-	defer ownerNode.dependentsLock.RUnlock()
+func (n *node) getDependents() []*node {
+	n.dependentsLock.RLock()
+	defer n.dependentsLock.RUnlock()
 	var ret []*node
-	for dep := range ownerNode.dependents {
+	for dep := range n.dependents {
 		ret = append(ret, dep)
 	}
 	return ret
@@ -132,6 +146,14 @@ func (n *node) blockingDependents() []*node {
 		}
 	}
 	return ret
+}
+
+// String renders node as a string using fmt. Acquires a read lock to ensure the
+// reflective dump of dependents doesn't race with any concurrent writes.
+func (n *node) String() string {
+	n.dependentsLock.RLock()
+	defer n.dependentsLock.RUnlock()
+	return fmt.Sprintf("%#v", n)
 }
 
 type concurrentUIDToNode struct {

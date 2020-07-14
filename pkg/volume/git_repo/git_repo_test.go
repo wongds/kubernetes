@@ -20,18 +20,19 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/util/exec"
 	"k8s.io/kubernetes/pkg/volume"
-	"k8s.io/kubernetes/pkg/volume/empty_dir"
+	"k8s.io/kubernetes/pkg/volume/emptydir"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
+	"k8s.io/utils/exec"
+	fakeexec "k8s.io/utils/exec/testing"
 )
 
 func newTestHost(t *testing.T) (string, volume.VolumeHost) {
@@ -39,14 +40,14 @@ func newTestHost(t *testing.T) (string, volume.VolumeHost) {
 	if err != nil {
 		t.Fatalf("can't make a temp rootdir: %v", err)
 	}
-	return tempDir, volumetest.NewFakeVolumeHost(tempDir, nil, empty_dir.ProbeVolumePlugins())
+	return tempDir, volumetest.NewFakeVolumeHost(t, tempDir, nil, emptydir.ProbeVolumePlugins())
 }
 
 func TestCanSupport(t *testing.T) {
 	plugMgr := volume.VolumePluginMgr{}
 	tempDir, host := newTestHost(t)
 	defer os.RemoveAll(tempDir)
-	plugMgr.InitPlugins(ProbeVolumePlugins(), host)
+	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, host)
 
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/git-repo")
 	if err != nil {
@@ -69,7 +70,7 @@ type expectedCommand struct {
 }
 
 func TestPlugin(t *testing.T) {
-	gitUrl := "https://github.com/kubernetes/kubernetes.git"
+	gitURL := "https://github.com/kubernetes/kubernetes.git"
 	revision := "2a30ce65c5ab586b98916d83385c5983edd353a1"
 
 	scenarios := []struct {
@@ -84,7 +85,7 @@ func TestPlugin(t *testing.T) {
 				Name: "vol1",
 				VolumeSource: v1.VolumeSource{
 					GitRepo: &v1.GitRepoVolumeSource{
-						Repository: gitUrl,
+						Repository: gitURL,
 						Revision:   revision,
 						Directory:  "target_dir",
 					},
@@ -92,7 +93,7 @@ func TestPlugin(t *testing.T) {
 			},
 			expecteds: []expectedCommand{
 				{
-					cmd: []string{"git", "clone", gitUrl, "target_dir"},
+					cmd: []string{"git", "clone", "--", gitURL, "target_dir"},
 					dir: "",
 				},
 				{
@@ -112,14 +113,14 @@ func TestPlugin(t *testing.T) {
 				Name: "vol1",
 				VolumeSource: v1.VolumeSource{
 					GitRepo: &v1.GitRepoVolumeSource{
-						Repository: gitUrl,
+						Repository: gitURL,
 						Directory:  "target_dir",
 					},
 				},
 			},
 			expecteds: []expectedCommand{
 				{
-					cmd: []string{"git", "clone", gitUrl, "target_dir"},
+					cmd: []string{"git", "clone", "--", gitURL, "target_dir"},
 					dir: "",
 				},
 			},
@@ -131,13 +132,13 @@ func TestPlugin(t *testing.T) {
 				Name: "vol1",
 				VolumeSource: v1.VolumeSource{
 					GitRepo: &v1.GitRepoVolumeSource{
-						Repository: gitUrl,
+						Repository: gitURL,
 					},
 				},
 			},
 			expecteds: []expectedCommand{
 				{
-					cmd: []string{"git", "clone", gitUrl},
+					cmd: []string{"git", "clone", "--", gitURL},
 					dir: "",
 				},
 			},
@@ -149,7 +150,7 @@ func TestPlugin(t *testing.T) {
 				Name: "vol1",
 				VolumeSource: v1.VolumeSource{
 					GitRepo: &v1.GitRepoVolumeSource{
-						Repository: gitUrl,
+						Repository: gitURL,
 						Revision:   revision,
 						Directory:  "",
 					},
@@ -157,7 +158,7 @@ func TestPlugin(t *testing.T) {
 			},
 			expecteds: []expectedCommand{
 				{
-					cmd: []string{"git", "clone", gitUrl},
+					cmd: []string{"git", "clone", "--", gitURL},
 					dir: "",
 				},
 				{
@@ -177,7 +178,7 @@ func TestPlugin(t *testing.T) {
 				Name: "vol1",
 				VolumeSource: v1.VolumeSource{
 					GitRepo: &v1.GitRepoVolumeSource{
-						Repository: gitUrl,
+						Repository: gitURL,
 						Revision:   revision,
 						Directory:  ".",
 					},
@@ -185,7 +186,7 @@ func TestPlugin(t *testing.T) {
 			},
 			expecteds: []expectedCommand{
 				{
-					cmd: []string{"git", "clone", gitUrl, "."},
+					cmd: []string{"git", "clone", "--", gitURL, "."},
 					dir: "",
 				},
 				{
@@ -198,6 +199,72 @@ func TestPlugin(t *testing.T) {
 				},
 			},
 			isExpectedFailure: false,
+		},
+		{
+			name: "current-dir-mess",
+			vol: &v1.Volume{
+				Name: "vol1",
+				VolumeSource: v1.VolumeSource{
+					GitRepo: &v1.GitRepoVolumeSource{
+						Repository: gitURL,
+						Revision:   revision,
+						Directory:  "./.",
+					},
+				},
+			},
+			expecteds: []expectedCommand{
+				{
+					cmd: []string{"git", "clone", "--", gitURL, "./."},
+					dir: "",
+				},
+				{
+					cmd: []string{"git", "checkout", revision},
+					dir: "",
+				},
+				{
+					cmd: []string{"git", "reset", "--hard"},
+					dir: "",
+				},
+			},
+			isExpectedFailure: false,
+		},
+		{
+			name: "invalid-repository",
+			vol: &v1.Volume{
+				Name: "vol1",
+				VolumeSource: v1.VolumeSource{
+					GitRepo: &v1.GitRepoVolumeSource{
+						Repository: "--foo",
+					},
+				},
+			},
+			isExpectedFailure: true,
+		},
+		{
+			name: "invalid-revision",
+			vol: &v1.Volume{
+				Name: "vol1",
+				VolumeSource: v1.VolumeSource{
+					GitRepo: &v1.GitRepoVolumeSource{
+						Repository: gitURL,
+						Revision:   "--bar",
+					},
+				},
+			},
+			isExpectedFailure: true,
+		},
+		{
+			name: "invalid-directory",
+			vol: &v1.Volume{
+				Name: "vol1",
+				VolumeSource: v1.VolumeSource{
+					GitRepo: &v1.GitRepoVolumeSource{
+						Repository: gitURL,
+						Directory:  "-b",
+					},
+				},
+			},
+			isExpectedFailure: true,
 		},
 	}
 
@@ -224,7 +291,7 @@ func doTestPlugin(scenario struct {
 	plugMgr := volume.VolumePluginMgr{}
 	rootDir, host := newTestHost(t)
 	defer os.RemoveAll(rootDir)
-	plugMgr.InitPlugins(ProbeVolumePlugins(), host)
+	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, host)
 
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/git-repo")
 	if err != nil {
@@ -263,11 +330,11 @@ func doTestPlugin(scenario struct {
 			allErrs = append(allErrs,
 				fmt.Errorf("SetUp() failed, volume path not created: %s", path))
 			return allErrs
-		} else {
-			allErrs = append(allErrs,
-				fmt.Errorf("SetUp() failed: %v", err))
-			return allErrs
 		}
+		allErrs = append(allErrs,
+			fmt.Errorf("SetUp() failed: %v", err))
+		return allErrs
+
 	}
 
 	// gitRepo volume should create its own empty wrapper path
@@ -305,7 +372,7 @@ func doTestPlugin(scenario struct {
 			fmt.Errorf("TearDown() failed, volume path still exists: %s", path))
 	} else if !os.IsNotExist(err) {
 		allErrs = append(allErrs,
-			fmt.Errorf("SetUp() failed: %v", err))
+			fmt.Errorf("TearDown() failed: %v", err))
 	}
 	return allErrs
 }
@@ -320,42 +387,42 @@ func doTestSetUp(scenario struct {
 	allErrs := []error{}
 
 	// Construct combined outputs from expected commands
-	var fakeOutputs []exec.FakeCombinedOutputAction
-	var fcmd exec.FakeCmd
+	var fakeOutputs []fakeexec.FakeAction
+	var fcmd fakeexec.FakeCmd
 	for _, expected := range expecteds {
 		if expected.cmd[1] == "clone" {
-			fakeOutputs = append(fakeOutputs, func() ([]byte, error) {
+			fakeOutputs = append(fakeOutputs, func() ([]byte, []byte, error) {
 				// git clone, it creates new dir/files
-				os.MkdirAll(path.Join(fcmd.Dirs[0], expected.dir), 0750)
-				return []byte{}, nil
+				os.MkdirAll(filepath.Join(fcmd.Dirs[0], expected.dir), 0750)
+				return []byte{}, nil, nil
 			})
 		} else {
 			// git checkout || git reset, they create nothing
-			fakeOutputs = append(fakeOutputs, func() ([]byte, error) {
-				return []byte{}, nil
+			fakeOutputs = append(fakeOutputs, func() ([]byte, []byte, error) {
+				return []byte{}, nil, nil
 			})
 		}
 	}
-	fcmd = exec.FakeCmd{
+	fcmd = fakeexec.FakeCmd{
 		CombinedOutputScript: fakeOutputs,
 	}
 
 	// Construct fake exec outputs from fcmd
-	var fakeAction []exec.FakeCommandAction
+	var fakeAction []fakeexec.FakeCommandAction
 	for i := 0; i < len(expecteds); i++ {
 		fakeAction = append(fakeAction, func(cmd string, args ...string) exec.Cmd {
-			return exec.InitFakeCmd(&fcmd, cmd, args...)
+			return fakeexec.InitFakeCmd(&fcmd, cmd, args...)
 		})
 
 	}
-	fake := exec.FakeExec{
+	fake := fakeexec.FakeExec{
 		CommandScript: fakeAction,
 	}
 
 	g := mounter.(*gitRepoVolumeMounter)
 	g.exec = &fake
 
-	g.SetUp(nil)
+	g.SetUp(volume.MounterArgs{})
 
 	if fake.CommandCalls != len(expecteds) {
 		allErrs = append(allErrs,

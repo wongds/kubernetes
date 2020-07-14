@@ -1,52 +1,50 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 reviewers:
+  - neolit123
+  - johnSchnake
+  - SataQiu
+  - tanjunchen
+approvers:
+  - alejandrox1
+  - andrewsykim
+  - BenTheElder
+  - bowei # for test/e2e/{dns*,network}.go
+  - cblecker
+  - MrHohn
   - deads2k
   - enisoc
-  - erictune
-  - fabianofranz # for test/e2e/kubectl.go
-  - fejta
-  - foxish # for test/e2e/network-partition.go
-  - gmarek
-  - ixdy
   - janetkuo
-  - kargakis
-  - kow3ns # for test/e2e/statefulset.go
-  - krousey
   - liggitt
-  - madhusudancs
-  - marun
   - mikedanese
-  - ncdc
+  - msau42
+  - neolit123
+  - oomichi
   - pwittrock # for test/e2e/kubectl.go
-  - rmmh
   - saad-ali
+  - SataQiu
+  - sig-testing-approvers
   - smarterclayton
   - soltysh
-  - spiffxp
-  - spxtr
   - sttts
-approvers:
-  - deads2k
-  - enisoc
+  - timothysc
+emeritus_approvers:
+  - enj
   - eparis
   - erictune
-  - fabianofranz # for test/e2e/kubectl.go
-  - fejta
-  - foxish # for test/e2e/network-partition.go
+  - foxish
   - gmarek
-  - ixdy
-  - janetkuo
-  - kargakis
-  - kow3ns # for test/e2e/statefulset.go
   - krousey
-  - liggitt
+  - kow3ns
   - madhusudancs
   - marun
-  - mikedanese
+  - zmerlynn
+  - MaciekPytel
+  - rramkumar1
   - ncdc
-  - pwittrock # for test/e2e/kubectl.go
-  - saad-ali
-  - smarterclayton
-  - soltysh
-  - spiffxp
-  - spxtr
-  - sttts
+  - vishh
+  - shyamjvs
+
+labels:
+- area/test
+- sig/testing

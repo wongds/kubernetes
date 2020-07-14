@@ -20,10 +20,9 @@ import (
 	"sync"
 	"testing"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/pkg/api"
-	"k8s.io/client-go/pkg/api/v1"
 )
 
 // ensure the watch delivers the requested and only the requested items.
@@ -76,7 +75,7 @@ func TestRCNumber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if e, a := "3", list.(*api.List).ResourceVersion; e != a {
+	if e, a := "3", list.(*v1.List).ResourceVersion; e != a {
 		t.Errorf("wanted %v, got %v", e, a)
 	}
 
@@ -91,6 +90,47 @@ func TestRCNumber(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	go consume(t, w3, []string{}, wg)
+	source.Shutdown()
+	wg.Wait()
+}
+
+// TestResetWatch validates that the FakeController correctly mocks a watch
+// falling behind and ResourceVersions aging out.
+func TestResetWatch(t *testing.T) {
+	pod := func(name string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+		}
+	}
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+
+	source := NewFakeControllerSource()
+	source.Add(pod("foo"))    // RV = 1
+	source.Modify(pod("foo")) // RV = 2
+	source.Modify(pod("foo")) // RV = 3
+
+	// Kill watch, delete change history
+	source.ResetWatch()
+
+	// This should fail, RV=1 was lost with ResetWatch
+	_, err := source.Watch(metav1.ListOptions{ResourceVersion: "1"})
+	if err == nil {
+		t.Fatalf("Unexpected non-error")
+	}
+
+	// This should succeed, RV=3 is current
+	w, err := source.Watch(metav1.ListOptions{ResourceVersion: "3"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Modify again, ensure the watch is still working
+	source.Modify(pod("foo"))
+	go consume(t, w, []string{"4"}, wg)
 	source.Shutdown()
 	wg.Wait()
 }

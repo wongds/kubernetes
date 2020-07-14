@@ -18,6 +18,7 @@ package jsonpath
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
@@ -29,15 +30,17 @@ import (
 type JSONPath struct {
 	name       string
 	parser     *Parser
-	stack      [][]reflect.Value //push and pop values in different scopes
-	cur        []reflect.Value   //current scope values
 	beginRange int
 	inRange    int
 	endRange   int
 
+	lastEndNode *Node
+
 	allowMissingKeys bool
+	outputJSON       bool
 }
 
+// New creates a new JSONPath with the given name.
 func New(name string) *JSONPath {
 	return &JSONPath{
 		name:       name,
@@ -54,13 +57,14 @@ func (j *JSONPath) AllowMissingKeys(allow bool) *JSONPath {
 	return j
 }
 
-// Parse parse the given template, return error
-func (j *JSONPath) Parse(text string) (err error) {
+// Parse parses the given template and returns an error.
+func (j *JSONPath) Parse(text string) error {
+	var err error
 	j.parser, err = Parse(j.name, text)
-	return
+	return err
 }
 
-// Execute bounds data into template and write the result
+// Execute bounds data into template and writes the result.
 func (j *JSONPath) Execute(wr io.Writer, data interface{}) error {
 	fullResults, err := j.FindResults(data)
 	if err != nil {
@@ -79,47 +83,93 @@ func (j *JSONPath) FindResults(data interface{}) ([][]reflect.Value, error) {
 		return nil, fmt.Errorf("%s is an incomplete jsonpath template", j.name)
 	}
 
-	j.cur = []reflect.Value{reflect.ValueOf(data)}
+	cur := []reflect.Value{reflect.ValueOf(data)}
 	nodes := j.parser.Root.Nodes
 	fullResult := [][]reflect.Value{}
 	for i := 0; i < len(nodes); i++ {
 		node := nodes[i]
-		results, err := j.walk(j.cur, node)
+		results, err := j.walk(cur, node)
 		if err != nil {
 			return nil, err
 		}
 
-		//encounter an end node, break the current block
+		// encounter an end node, break the current block
 		if j.endRange > 0 && j.endRange <= j.inRange {
-			j.endRange -= 1
+			j.endRange--
+			j.lastEndNode = &nodes[i]
 			break
 		}
-		//encounter a range node, start a range loop
+		// encounter a range node, start a range loop
 		if j.beginRange > 0 {
-			j.beginRange -= 1
-			j.inRange += 1
-			for k, value := range results {
+			j.beginRange--
+			j.inRange++
+			for _, value := range results {
 				j.parser.Root.Nodes = nodes[i+1:]
-				if k == len(results)-1 {
-					j.inRange -= 1
-				}
 				nextResults, err := j.FindResults(value.Interface())
 				if err != nil {
 					return nil, err
 				}
 				fullResult = append(fullResult, nextResults...)
 			}
-			break
+			j.inRange--
+
+			// Fast forward to resume processing after the most recent end node that was encountered
+			for k := i + 1; k < len(nodes); k++ {
+				if &nodes[k] == j.lastEndNode {
+					i = k
+					break
+				}
+			}
+			continue
 		}
 		fullResult = append(fullResult, results)
 	}
 	return fullResult, nil
 }
 
-// PrintResults write the results into writer
+// EnableJSONOutput changes the PrintResults behavior to return a JSON array of results
+func (j *JSONPath) EnableJSONOutput(v bool) {
+	j.outputJSON = v
+}
+
+// PrintResults writes the results into writer
 func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
+	if j.outputJSON {
+		// convert the []reflect.Value to something that json
+		// will be able to marshal
+		r := make([]interface{}, 0, len(results))
+		for i := range results {
+			r = append(r, results[i].Interface())
+		}
+		results = []reflect.Value{reflect.ValueOf(r)}
+	}
 	for i, r := range results {
-		text, err := j.evalToText(r)
+		var text []byte
+		var err error
+		outputJSON := true
+		kind := r.Kind()
+		if kind == reflect.Interface {
+			kind = r.Elem().Kind()
+		}
+		switch kind {
+		case reflect.Map:
+		case reflect.Array:
+		case reflect.Slice:
+		case reflect.Struct:
+		default:
+			outputJSON = false
+		}
+		switch {
+		case outputJSON || j.outputJSON:
+			if j.outputJSON {
+				text, err = json.MarshalIndent(r.Interface(), "", "    ")
+				text = append(text, '\n')
+			} else {
+				text, err = json.Marshal(r.Interface())
+			}
+		default:
+			text, err = j.evalToText(r)
+		}
 		if err != nil {
 			return err
 		}
@@ -130,7 +180,9 @@ func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 			return err
 		}
 	}
+
 	return nil
+
 }
 
 // walk visits tree rooted at the given node in DFS order
@@ -210,17 +262,11 @@ func (j *JSONPath) evalIdentifier(input []reflect.Value, node *IdentifierNode) (
 	results := []reflect.Value{}
 	switch node.Name {
 	case "range":
-		j.stack = append(j.stack, j.cur)
-		j.beginRange += 1
+		j.beginRange++
 		results = input
 	case "end":
-		if j.endRange < j.inRange { //inside a loop, break the current block
-			j.endRange += 1
-			break
-		}
-		// the loop is about to end, pop value and continue the following execution
-		if len(j.stack) > 0 {
-			j.cur, j.stack = j.stack[len(j.stack)-1], j.stack[:len(j.stack)-1]
+		if j.inRange > 0 {
+			j.endRange++
 		} else {
 			return results, fmt.Errorf("not in range, nothing to end")
 		}
@@ -253,26 +299,34 @@ func (j *JSONPath) evalArray(input []reflect.Value, node *ArrayNode) ([]reflect.
 			params[1].Value = value.Len()
 		}
 
-		if params[1].Value < 0 {
+		if params[1].Value < 0 || (params[1].Value == 0 && params[1].Derived) {
 			params[1].Value += value.Len()
 		}
-
 		sliceLength := value.Len()
 		if params[1].Value != params[0].Value { // if you're requesting zero elements, allow it through.
-			if params[0].Value >= sliceLength {
+			if params[0].Value >= sliceLength || params[0].Value < 0 {
 				return input, fmt.Errorf("array index out of bounds: index %d, length %d", params[0].Value, sliceLength)
 			}
-			if params[1].Value > sliceLength {
+			if params[1].Value > sliceLength || params[1].Value < 0 {
 				return input, fmt.Errorf("array index out of bounds: index %d, length %d", params[1].Value-1, sliceLength)
 			}
+			if params[0].Value > params[1].Value {
+				return input, fmt.Errorf("starting index %d is greater than ending index %d", params[0].Value, params[1].Value)
+			}
+		} else {
+			return result, nil
 		}
 
-		if !params[2].Known {
-			value = value.Slice(params[0].Value, params[1].Value)
-		} else {
-			value = value.Slice3(params[0].Value, params[1].Value, params[2].Value)
+		value = value.Slice(params[0].Value, params[1].Value)
+
+		step := 1
+		if params[2].Known {
+			if params[2].Value <= 0 {
+				return input, fmt.Errorf("step must be > 0")
+			}
+			step = params[2].Value
 		}
-		for i := 0; i < value.Len(); i++ {
+		for i := 0; i < value.Len(); i += step {
 			result = append(result, value.Index(i))
 		}
 	}
@@ -366,7 +420,7 @@ func (j *JSONPath) evalField(input []reflect.Value, node *FieldNode) ([]reflect.
 	return results, nil
 }
 
-// evalWildcard extract all contents of the given value
+// evalWildcard extracts all contents of the given value
 func (j *JSONPath) evalWildcard(input []reflect.Value, node *WildcardNode) ([]reflect.Value, error) {
 	results := []reflect.Value{}
 	for _, value := range input {
@@ -393,7 +447,7 @@ func (j *JSONPath) evalWildcard(input []reflect.Value, node *WildcardNode) ([]re
 	return results, nil
 }
 
-// evalRecursive visit the given value recursively and push all of them to result
+// evalRecursive visits the given value recursively and pushes all of them to result
 func (j *JSONPath) evalRecursive(input []reflect.Value, node *RecursiveNode) ([]reflect.Value, error) {
 	result := []reflect.Value{}
 	for _, value := range input {
@@ -429,7 +483,7 @@ func (j *JSONPath) evalRecursive(input []reflect.Value, node *RecursiveNode) ([]
 	return result, nil
 }
 
-// evalFilter filter array according to FilterNode
+// evalFilter filters array according to FilterNode
 func (j *JSONPath) evalFilter(input []reflect.Value, node *FilterNode) ([]reflect.Value, error) {
 	results := []reflect.Value{}
 	for _, value := range input {
@@ -455,7 +509,10 @@ func (j *JSONPath) evalFilter(input []reflect.Value, node *FilterNode) ([]reflec
 			}
 
 			var left, right interface{}
-			if len(lefts) != 1 {
+			switch {
+			case len(lefts) == 0:
+				continue
+			case len(lefts) > 1:
 				return input, fmt.Errorf("can only compare one element at a time")
 			}
 			left = lefts[0].Interface()
@@ -464,7 +521,10 @@ func (j *JSONPath) evalFilter(input []reflect.Value, node *FilterNode) ([]reflec
 			if err != nil {
 				return input, err
 			}
-			if len(rights) != 1 {
+			switch {
+			case len(rights) == 0:
+				continue
+			case len(rights) > 1:
 				return input, fmt.Errorf("can only compare one element at a time")
 			}
 			right = rights[0].Interface()

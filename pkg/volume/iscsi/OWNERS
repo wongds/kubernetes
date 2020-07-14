@@ -1,20 +1,15 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 approvers:
 - pmorie
 - saad-ali
 - rootfs
+- humblec
 reviewers:
-- thockin
-- smarterclayton
-- deads2k
-- brendandburns
-- derekwaynecarr
-- bprashanth
-- pmorie
 - saad-ali
-- justinsb
 - jsafrane
 - rootfs
 - humblec
 - jingxu97
-- rkouj
 - msau42
+- mtanino

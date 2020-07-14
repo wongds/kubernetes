@@ -17,77 +17,49 @@ limitations under the License.
 package server
 
 import (
-	"crypto/x509"
 	"fmt"
 	"net"
 
 	restclient "k8s.io/client-go/rest"
+	netutils "k8s.io/utils/net"
 )
 
 // LoopbackClientServerNameOverride is passed to the apiserver from the loopback client in order to
 // select the loopback certificate via SNI if TLS is used.
 const LoopbackClientServerNameOverride = "apiserver-loopback-client"
 
-func (s *SecureServingInfo) NewLoopbackClientConfig(token string, loopbackCert []byte) (*restclient.Config, error) {
+func (s *SecureServingInfo) NewClientConfig(caCert []byte) (*restclient.Config, error) {
 	if s == nil || (s.Cert == nil && len(s.SNICerts) == 0) {
 		return nil, nil
 	}
 
-	host, port, err := LoopbackHostPort(s.BindAddress)
+	host, port, err := LoopbackHostPort(s.Listener.Addr().String())
 	if err != nil {
 		return nil, err
 	}
 
 	return &restclient.Config{
-		// Increase QPS limits. The client is currently passed to all admission plugins,
-		// and those can be throttled in case of higher load on apiserver - see #22340 and #22422
-		// for more details. Once #22422 is fixed, we may want to remove it.
-		QPS:         50,
-		Burst:       100,
-		Host:        "https://" + net.JoinHostPort(host, port),
-		BearerToken: token,
+		// Do not limit loopback client QPS.
+		QPS:  -1,
+		Host: "https://" + net.JoinHostPort(host, port),
 		// override the ServerName to select our loopback certificate via SNI. This name is also
 		// used by the client to compare the returns server certificate against.
 		TLSClientConfig: restclient.TLSClientConfig{
-			ServerName: LoopbackClientServerNameOverride,
-			CAData:     loopbackCert,
+			CAData: caCert,
 		},
 	}, nil
 }
 
-func trustedChain(chain []*x509.Certificate) bool {
-	intermediates := x509.NewCertPool()
-	for _, cert := range chain[1:] {
-		intermediates.AddCert(cert)
-	}
-	_, err := chain[0].Verify(x509.VerifyOptions{
-		Intermediates: intermediates,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	})
-	return err == nil
-}
-
-func parseChain(bss [][]byte) ([]*x509.Certificate, error) {
-	var result []*x509.Certificate
-	for _, bs := range bss {
-		x509Cert, err := x509.ParseCertificate(bs)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, x509Cert)
+func (s *SecureServingInfo) NewLoopbackClientConfig(token string, loopbackCert []byte) (*restclient.Config, error) {
+	c, err := s.NewClientConfig(loopbackCert)
+	if err != nil || c == nil {
+		return c, err
 	}
 
-	return result, nil
-}
+	c.BearerToken = token
+	c.TLSClientConfig.ServerName = LoopbackClientServerNameOverride
 
-func findCA(chain []*x509.Certificate) (*x509.Certificate, error) {
-	for _, cert := range chain {
-		if cert.IsCA {
-			return cert, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no certificate with CA:TRUE found in chain")
+	return c, nil
 }
 
 // LoopbackHostPort returns the host and port loopback REST clients should use
@@ -99,30 +71,27 @@ func LoopbackHostPort(bindAddress string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid server bind address: %q", bindAddress)
 	}
 
+	isIPv6 := netutils.IsIPv6String(host)
+
 	// Value is expected to be an IP or DNS name, not "0.0.0.0".
-	if host == "0.0.0.0" {
-		// compare MaybeDefaultWithSelfSignedCerts which adds "localhost" to the cert as alternateDNS
-		host = "localhost"
+	if host == "0.0.0.0" || host == "::" {
+		// Get ip of local interface, but fall back to "localhost".
+		// Note that "localhost" is resolved with the external nameserver first with Go's stdlib.
+		// So if localhost.<yoursearchdomain> resolves, we don't get a 127.0.0.1 as expected.
+		host = getLoopbackAddress(isIPv6)
 	}
 	return host, port, nil
 }
 
-func certMatchesName(cert *x509.Certificate, name string) bool {
-	for _, certName := range cert.DNSNames {
-		if certName == name {
-			return true
+// getLoopbackAddress returns the ip address of local loopback interface. If any error occurs or loopback interface is not found, will fall back to "localhost"
+func getLoopbackAddress(wantIPv6 bool) string {
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, address := range addrs {
+			if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.IsLoopback() && wantIPv6 == netutils.IsIPv6(ipnet.IP) {
+				return ipnet.IP.String()
+			}
 		}
 	}
-
-	return false
-}
-
-func certMatchesIP(cert *x509.Certificate, ip string) bool {
-	for _, certIP := range cert.IPAddresses {
-		if certIP.String() == ip {
-			return true
-		}
-	}
-
-	return false
+	return "localhost"
 }

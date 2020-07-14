@@ -1,6 +1,16 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 reviewers:
-- DirectXMan12
+- josephburnett
+- MaciekPytel
 - mwielgus
 - piosz
+approvers:
+- josephburnett
+- MaciekPytel
+- mwielgus
+- piosz
+emeritus_approvers:
 - jszczepkowski
-- fgrzadkowski
+labels:
+- sig/autoscaling

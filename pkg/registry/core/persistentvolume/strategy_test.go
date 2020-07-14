@@ -19,13 +19,16 @@ package persistentvolume
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
+	api "k8s.io/kubernetes/pkg/apis/core"
+
+	// ensure types are installed
+	_ "k8s.io/kubernetes/pkg/apis/core/install"
 )
 
 func TestSelectableFieldLabelConversions(t *testing.T) {
 	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
-		api.Registry.GroupOrDie(api.GroupName).GroupVersion.String(),
+		"v1",
 		"PersistentVolume",
 		PersistentVolumeToSelectableFields(&api.PersistentVolume{}),
 		map[string]string{"name": "metadata.name"},

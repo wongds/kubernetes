@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/clock"
-	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 )
@@ -51,7 +51,7 @@ func newActiveDeadlineHandler(
 
 	// check for all required fields
 	if clock == nil || podStatusProvider == nil || recorder == nil {
-		return nil, fmt.Errorf("Required arguments must not be nil: %v, %v, %v", clock, podStatusProvider, recorder)
+		return nil, fmt.Errorf("required arguments must not be nil: %v, %v, %v", clock, podStatusProvider, recorder)
 	}
 	return &activeDeadlineHandler{
 		clock:             clock,

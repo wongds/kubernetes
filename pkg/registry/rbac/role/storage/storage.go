@@ -20,9 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kubernetes/pkg/apis/rbac"
-	"k8s.io/kubernetes/pkg/registry/cachesize"
 	"k8s.io/kubernetes/pkg/registry/rbac/role"
 )
 
@@ -32,26 +31,23 @@ type REST struct {
 }
 
 // NewREST returns a RESTStorage object that will work against Role objects.
-func NewREST(optsGetter generic.RESTOptionsGetter) *REST {
+func NewREST(optsGetter generic.RESTOptionsGetter) (*REST, error) {
 	store := &genericregistry.Store{
-		Copier:      api.Scheme,
-		NewFunc:     func() runtime.Object { return &rbac.Role{} },
-		NewListFunc: func() runtime.Object { return &rbac.RoleList{} },
-		ObjectNameFunc: func(obj runtime.Object) (string, error) {
-			return obj.(*rbac.Role).Name, nil
-		},
-		PredicateFunc:     role.Matcher,
-		QualifiedResource: rbac.Resource("roles"),
-		WatchCacheSize:    cachesize.GetWatchCacheSizeByResource("roles"),
+		NewFunc:                  func() runtime.Object { return &rbac.Role{} },
+		NewListFunc:              func() runtime.Object { return &rbac.RoleList{} },
+		DefaultQualifiedResource: rbac.Resource("roles"),
 
 		CreateStrategy: role.Strategy,
 		UpdateStrategy: role.Strategy,
 		DeleteStrategy: role.Strategy,
+
+		// TODO: define table converter that exposes more than name/creation timestamp?
+		TableConvertor: rest.NewDefaultTableConvertor(rbac.Resource("roles")),
 	}
-	options := &generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: role.GetAttrs}
+	options := &generic.StoreOptions{RESTOptions: optsGetter}
 	if err := store.CompleteWithOptions(options); err != nil {
-		panic(err) // TODO: Propagate error up
+		return nil, err
 	}
 
-	return &REST{store}
+	return &REST{store}, nil
 }

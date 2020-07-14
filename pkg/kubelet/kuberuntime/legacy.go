@@ -17,8 +17,11 @@ limitations under the License.
 package kuberuntime
 
 import (
+	"fmt"
+	"path"
+	"strings"
+
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 )
 
 // This file implements the functions that are needed for backward
@@ -30,12 +33,43 @@ const (
 	// kubelet.containerLogsDir.
 	legacyContainerLogsDir = "/var/log/containers"
 	// legacyLogSuffix is the legacy log suffix.
-	legacyLogSuffix = dockertools.LogSuffix
+	legacyLogSuffix = "log"
+
+	ext4MaxFileNameLen = 255
 )
 
 // legacyLogSymlink composes the legacy container log path. It is only used for legacy cluster
 // logging support.
 func legacyLogSymlink(containerID string, containerName, podName, podNamespace string) string {
-	return dockertools.LogSymlink(legacyContainerLogsDir, kubecontainer.BuildPodFullName(podName, podNamespace),
+	return logSymlink(legacyContainerLogsDir, kubecontainer.BuildPodFullName(podName, podNamespace),
 		containerName, containerID)
+}
+
+// getContainerIDFromLegacyLogSymlink returns error if container Id cannot be parsed
+func getContainerIDFromLegacyLogSymlink(logSymlink string) (string, error) {
+	parts := strings.Split(logSymlink, "-")
+	if len(parts) == 0 {
+		return "", fmt.Errorf("unable to find separator in %q", logSymlink)
+	}
+	containerIDWithSuffix := parts[len(parts)-1]
+	suffix := fmt.Sprintf(".%s", legacyLogSuffix)
+	if !strings.HasSuffix(containerIDWithSuffix, suffix) {
+		return "", fmt.Errorf("%q doesn't end with %q", logSymlink, suffix)
+	}
+	containerIDWithoutSuffix := strings.TrimSuffix(containerIDWithSuffix, suffix)
+	// container can be retrieved with container Id as short as 6 characters
+	if len(containerIDWithoutSuffix) < 6 {
+		return "", fmt.Errorf("container Id %q is too short", containerIDWithoutSuffix)
+	}
+	return containerIDWithoutSuffix, nil
+}
+
+func logSymlink(containerLogsDir, podFullName, containerName, containerID string) string {
+	suffix := fmt.Sprintf(".%s", legacyLogSuffix)
+	logPath := fmt.Sprintf("%s_%s-%s", podFullName, containerName, containerID)
+	// Length of a filename cannot exceed 255 characters in ext4 on Linux.
+	if len(logPath) > ext4MaxFileNameLen-len(suffix) {
+		logPath = logPath[:ext4MaxFileNameLen-len(suffix)]
+	}
+	return path.Join(containerLogsDir, logPath+suffix)
 }

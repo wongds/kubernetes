@@ -17,8 +17,10 @@ limitations under the License.
 package errors
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -146,6 +148,70 @@ func TestPluralAggregate(t *testing.T) {
 	}
 }
 
+func TestDedupeAggregate(t *testing.T) {
+	var slice []error = []error{fmt.Errorf("abc"), fmt.Errorf("abc")}
+	var agg Aggregate
+
+	agg = NewAggregate(slice)
+	if agg == nil {
+		t.Errorf("expected non-nil")
+	}
+	if s := agg.Error(); s != "abc" {
+		t.Errorf("expected 'abc', got %q", s)
+	}
+	if s := agg.Errors(); len(s) != 2 {
+		t.Errorf("expected two-elements slice, got %#v", s)
+	}
+}
+
+func TestDedupePluralAggregate(t *testing.T) {
+	var slice []error = []error{fmt.Errorf("abc"), fmt.Errorf("abc"), fmt.Errorf("123")}
+	var agg Aggregate
+
+	agg = NewAggregate(slice)
+	if agg == nil {
+		t.Errorf("expected non-nil")
+	}
+	if s := agg.Error(); s != "[abc, 123]" {
+		t.Errorf("expected '[abc, 123]', got %q", s)
+	}
+	if s := agg.Errors(); len(s) != 3 {
+		t.Errorf("expected three-elements slice, got %#v", s)
+	}
+}
+
+func TestFlattenAndDedupeAggregate(t *testing.T) {
+	var slice []error = []error{fmt.Errorf("abc"), fmt.Errorf("abc"), NewAggregate([]error{fmt.Errorf("abc")})}
+	var agg Aggregate
+
+	agg = NewAggregate(slice)
+	if agg == nil {
+		t.Errorf("expected non-nil")
+	}
+	if s := agg.Error(); s != "abc" {
+		t.Errorf("expected 'abc', got %q", s)
+	}
+	if s := agg.Errors(); len(s) != 3 {
+		t.Errorf("expected three-elements slice, got %#v", s)
+	}
+}
+
+func TestFlattenAggregate(t *testing.T) {
+	var slice []error = []error{fmt.Errorf("abc"), fmt.Errorf("abc"), NewAggregate([]error{fmt.Errorf("abc"), fmt.Errorf("def"), NewAggregate([]error{fmt.Errorf("def"), fmt.Errorf("ghi")})})}
+	var agg Aggregate
+
+	agg = NewAggregate(slice)
+	if agg == nil {
+		t.Errorf("expected non-nil")
+	}
+	if s := agg.Error(); s != "[abc, def, ghi]" {
+		t.Errorf("expected '[abc, def, ghi]', got %q", s)
+	}
+	if s := agg.Errors(); len(s) != 3 {
+		t.Errorf("expected three-elements slice, got %#v", s)
+	}
+}
+
 func TestFilterOut(t *testing.T) {
 	testCases := []struct {
 		err      error
@@ -262,6 +328,47 @@ func TestFlatten(t *testing.T) {
 	}
 }
 
+func TestCreateAggregateFromMessageCountMap(t *testing.T) {
+	testCases := []struct {
+		name     string
+		mcm      MessageCountMap
+		expected Aggregate
+	}{
+		{
+			"input has single instance of one message",
+			MessageCountMap{"abc": 1},
+			aggregate{fmt.Errorf("abc")},
+		},
+		{
+			"input has multiple messages",
+			MessageCountMap{"abc": 2, "ghi": 1},
+			aggregate{fmt.Errorf("abc (repeated 2 times)"), fmt.Errorf("ghi")},
+		},
+		{
+			"input has multiple messages",
+			MessageCountMap{"ghi": 1, "abc": 2},
+			aggregate{fmt.Errorf("abc (repeated 2 times)"), fmt.Errorf("ghi")},
+		},
+	}
+
+	var expected, agg []error
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.expected != nil {
+				expected = testCase.expected.Errors()
+				sort.Slice(expected, func(i, j int) bool { return expected[i].Error() < expected[j].Error() })
+			}
+			if testCase.mcm != nil {
+				agg = CreateAggregateFromMessageCountMap(testCase.mcm).Errors()
+				sort.Slice(agg, func(i, j int) bool { return agg[i].Error() < agg[j].Error() })
+			}
+			if !reflect.DeepEqual(expected, agg) {
+				t.Errorf("expected %v, got %v", expected, agg)
+			}
+		})
+	}
+}
+
 func TestAggregateGoroutines(t *testing.T) {
 	testCases := []struct {
 		errs     []error
@@ -322,5 +429,102 @@ func TestAggregateGoroutines(t *testing.T) {
 				t.Errorf("%d: expected %v, got aggregate containing %v", i, testCase.expected, err)
 			}
 		}
+	}
+}
+
+type alwaysMatchingError struct{}
+
+func (_ alwaysMatchingError) Error() string {
+	return "error"
+}
+
+func (_ alwaysMatchingError) Is(_ error) bool {
+	return true
+}
+
+type someError struct{ msg string }
+
+func (se someError) Error() string {
+	if se.msg != "" {
+		return se.msg
+	}
+	return "err"
+}
+
+func TestAggregateWithErrorsIs(t *testing.T) {
+	testCases := []struct {
+		name         string
+		err          error
+		matchAgainst error
+		expectMatch  bool
+	}{
+		{
+			name:         "no match",
+			err:          aggregate{errors.New("my-error"), errors.New("my-other-error")},
+			matchAgainst: fmt.Errorf("no entry %s", "here"),
+		},
+		{
+			name:         "match via .Is()",
+			err:          aggregate{errors.New("forbidden"), alwaysMatchingError{}},
+			matchAgainst: errors.New("unauthorized"),
+			expectMatch:  true,
+		},
+		{
+			name:         "match via equality",
+			err:          aggregate{errors.New("err"), someError{}},
+			matchAgainst: someError{},
+			expectMatch:  true,
+		},
+		{
+			name:         "match via nested aggregate",
+			err:          aggregate{errors.New("closed today"), aggregate{aggregate{someError{}}}},
+			matchAgainst: someError{},
+			expectMatch:  true,
+		},
+		{
+			name:         "match via wrapped aggregate",
+			err:          fmt.Errorf("wrap: %w", aggregate{errors.New("err"), someError{}}),
+			matchAgainst: someError{},
+			expectMatch:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := errors.Is(tc.err, tc.matchAgainst)
+			if result != tc.expectMatch {
+				t.Errorf("expected match: %t, got match: %t", tc.expectMatch, result)
+			}
+		})
+	}
+}
+
+type accessTrackingError struct {
+	wasAccessed bool
+}
+
+func (accessTrackingError) Error() string {
+	return "err"
+}
+
+func (ate *accessTrackingError) Is(_ error) bool {
+	ate.wasAccessed = true
+	return true
+}
+
+var _ error = &accessTrackingError{}
+
+func TestErrConfigurationInvalidWithErrorsIsShortCircuitsOnFirstMatch(t *testing.T) {
+	errC := aggregate{&accessTrackingError{}, &accessTrackingError{}}
+	_ = errors.Is(errC, &accessTrackingError{})
+
+	var numAccessed int
+	for _, err := range errC {
+		if ate := err.(*accessTrackingError); ate.wasAccessed {
+			numAccessed++
+		}
+	}
+	if numAccessed != 1 {
+		t.Errorf("expected exactly one error to get accessed, got %d", numAccessed)
 	}
 }

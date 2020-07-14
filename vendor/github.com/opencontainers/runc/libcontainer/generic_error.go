@@ -9,20 +9,6 @@ import (
 	"github.com/opencontainers/runc/libcontainer/stacktrace"
 )
 
-type syncType uint8
-
-const (
-	procReady syncType = iota
-	procError
-	procRun
-	procHooks
-	procResume
-)
-
-type syncT struct {
-	Type syncType `json:"type"`
-}
-
 var errorTemplate = template.Must(template.New("error").Parse(`Timestamp: {{.Timestamp}}
 Code: {{.ECode}}
 {{if .Message }}
@@ -94,7 +80,7 @@ func (e *genericError) Error() string {
 		return e.Message
 	}
 	frame := e.Stack.Frames[0]
-	return fmt.Sprintf("%s:%d: %s caused %q", frame.File, frame.Line, e.Cause, e.Message)
+	return fmt.Sprintf("%s:%d: %s caused: %s", frame.File, frame.Line, e.Cause, e.Message)
 }
 
 func (e *genericError) Code() ErrorCode {

@@ -1,11 +1,4 @@
-package(default_visibility = ["//visibility:public"])
-
-licenses(["notice"])
-
-load(
-    "@io_bazel_rules_go//go:def.bzl",
-    "go_library",
-)
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "go_default_library",
@@ -14,9 +7,17 @@ go_library(
         "delegate.go",
         "exec.go",
         "find.go",
+        "os_unix.go",
+        "os_windows.go",
+        "raw_exec.go",
     ],
-    tags = ["automanaged"],
-    deps = ["//vendor/github.com/containernetworking/cni/pkg/types:go_default_library"],
+    importmap = "k8s.io/kubernetes/vendor/github.com/containernetworking/cni/pkg/invoke",
+    importpath = "github.com/containernetworking/cni/pkg/invoke",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//vendor/github.com/containernetworking/cni/pkg/types:go_default_library",
+        "//vendor/github.com/containernetworking/cni/pkg/version:go_default_library",
+    ],
 )
 
 filegroup(
@@ -30,4 +31,5 @@ filegroup(
     name = "all-srcs",
     srcs = [":package-srcs"],
     tags = ["automanaged"],
+    visibility = ["//visibility:public"],
 )

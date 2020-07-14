@@ -19,37 +19,44 @@ package flexvolume
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/test/utils/harness"
+	"k8s.io/utils/exec/testing"
 )
 
-func TestInit(t *testing.T) {
-	plugin, _ := testPlugin()
+func TestInit(tt *testing.T) {
+	t := harness.For(tt)
+	defer t.Close()
+
+	plugin, _ := testPlugin(t)
 	plugin.runner = fakeRunner(
 		assertDriverCall(t, successOutput(), "init"),
 	)
 	plugin.Init(plugin.host)
 }
 
-func fakeVolumeNameOutput(name string) exec.FakeCombinedOutputAction {
+func fakeVolumeNameOutput(name string) testingexec.FakeAction {
 	return fakeResultOutput(&DriverStatus{
 		Status:     StatusSuccess,
 		VolumeName: name,
 	})
 }
 
-func TestGetVolumeName(t *testing.T) {
+func TestGetVolumeName(tt *testing.T) {
+	t := harness.For(tt)
+	defer t.Close()
+
 	spec := fakeVolumeSpec()
-	plugin, _ := testPlugin()
+	plugin, _ := testPlugin(t)
 	plugin.runner = fakeRunner(
-		assertDriverCall(t, fakeVolumeNameOutput("/dev/sdx"), getVolumeNameCmd,
-			specJson(plugin, spec, nil)),
+		assertDriverCall(t, fakeVolumeNameOutput(spec.Name()), getVolumeNameCmd,
+			specJSON(plugin, spec, nil)),
 	)
 
 	name, err := plugin.GetVolumeName(spec)
 	if err != nil {
 		t.Errorf("GetVolumeName() failed: %v", err)
 	}
-	expectedName := "~dev~sdx"
+	expectedName := spec.Name()
 	if name != expectedName {
 		t.Errorf("GetVolumeName() returned %v instead of %v", name, expectedName)
 	}

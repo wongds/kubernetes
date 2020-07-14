@@ -24,17 +24,9 @@ import (
 	"unicode"
 
 	fuzz "github.com/google/gofuzz"
-	"github.com/spf13/pflag"
 
 	inf "gopkg.in/inf.v0"
 )
-
-var useInfDec bool
-
-func amount(i int64, exponent int) infDecAmount {
-	// See the below test-- scale is the negative of an exponent.
-	return infDecAmount{inf.NewDec(i, inf.Scale(-exponent))}
-}
 
 func dec(i int64, exponent int) infDecAmount {
 	// See the below test-- scale is the negative of an exponent.
@@ -79,6 +71,17 @@ func TestQuantityParseZero(t *testing.T) {
 	}
 }
 
+// TestQuantityParseNonNumericPanic ensures that when a non-numeric string is parsed
+// it panics
+func TestQuantityParseNonNumericPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("MustParse did not panic")
+		}
+	}()
+	_ = MustParse("Non-Numeric")
+}
+
 // TestQuantityAddZeroPreservesSuffix verifies that a suffix is preserved
 // independent of the order of operations when adding a zero and non-zero val
 func TestQuantityAddZeroPreservesSuffix(t *testing.T) {
@@ -86,11 +89,11 @@ func TestQuantityAddZeroPreservesSuffix(t *testing.T) {
 	zero := MustParse("0")
 	for _, testValue := range testValues {
 		value := MustParse(testValue)
-		v1 := *value.Copy()
+		v1 := value.DeepCopy()
 		// ensure non-zero + zero = non-zero (suffix preserved)
 		v1.Add(zero)
 		// ensure zero + non-zero = non-zero (suffix preserved)
-		v2 := *zero.Copy()
+		v2 := zero.DeepCopy()
 		v2.Add(value)
 
 		if v1.String() != testValue {
@@ -110,7 +113,7 @@ func TestQuantitySubZeroPreservesSuffix(t *testing.T) {
 	zero := MustParse("0")
 	for _, testValue := range testValues {
 		value := MustParse(testValue)
-		v1 := *value.Copy()
+		v1 := value.DeepCopy()
 		// ensure non-zero - zero = non-zero (suffix preserved)
 		v1.Sub(zero)
 		// ensure we preserved the input value
@@ -119,9 +122,9 @@ func TestQuantitySubZeroPreservesSuffix(t *testing.T) {
 		}
 
 		// ensure zero - non-zero = -non-zero (suffix preserved)
-		v2 := *zero.Copy()
+		v2 := zero.DeepCopy()
 		v2.Sub(value)
-		negVal := *value.Copy()
+		negVal := value.DeepCopy()
 		negVal.Neg()
 		if v2.String() != negVal.String() {
 			t.Errorf("Expected %v, actual %v", negVal.String(), v2.String())
@@ -129,7 +132,7 @@ func TestQuantitySubZeroPreservesSuffix(t *testing.T) {
 	}
 }
 
-// Verifies that you get 0 as canonical value if internal value is 0, and not 0<suffix>
+// TestQuantityCanocicalizeZero verifies that you get 0 as canonical value if internal value is 0, and not 0<suffix>
 func TestQuantityCanocicalizeZero(t *testing.T) {
 	val := MustParse("1000m")
 	val.i.Sub(int64Amount{value: 1})
@@ -140,6 +143,7 @@ func TestQuantityCanocicalizeZero(t *testing.T) {
 }
 
 func TestQuantityCmp(t *testing.T) {
+	// Test when d is nil
 	table := []struct {
 		x      string
 		y      string
@@ -157,8 +161,8 @@ func TestQuantityCmp(t *testing.T) {
 			t.Errorf("X: %v, Y: %v, Expected: %v, Actual: %v", testCase.x, testCase.y, testCase.expect, result)
 		}
 	}
-
-	nils := []struct {
+	// Test when i is {0,0}
+	table2 := []struct {
 		x      *inf.Dec
 		y      *inf.Dec
 		expect int
@@ -172,11 +176,11 @@ func TestQuantityCmp(t *testing.T) {
 		{dec(10, 0).Dec, nil, 1},
 		{dec(-10, 0).Dec, nil, -1},
 	}
-	for _, nilCase := range nils {
-		q1 := Quantity{d: infDecAmount{nilCase.x}, Format: DecimalSI}
-		q2 := Quantity{d: infDecAmount{nilCase.y}, Format: DecimalSI}
-		if result := q1.Cmp(q2); result != nilCase.expect {
-			t.Errorf("X: %v, Y: %v, Expected: %v, Actual: %v", nilCase.x, nilCase.y, nilCase.expect, result)
+	for _, testCase := range table2 {
+		q1 := Quantity{d: infDecAmount{testCase.x}, Format: DecimalSI}
+		q2 := Quantity{d: infDecAmount{testCase.y}, Format: DecimalSI}
+		if result := q1.Cmp(q2); result != testCase.expect {
+			t.Errorf("X: %v, Y: %v, Expected: %v, Actual: %v", testCase.x, testCase.y, testCase.expect, result)
 		}
 	}
 }
@@ -514,7 +518,7 @@ func TestQuantityRoundUp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			expect := *item.expect.Copy()
+			expect := item.expect.DeepCopy()
 			if asDec {
 				got.AsDec()
 			}
@@ -571,7 +575,7 @@ func TestQuantityCmpInt64AndDec(t *testing.T) {
 	}
 
 	for _, item := range table {
-		a, b := *item.a.Copy(), *item.b.Copy()
+		a, b := item.a.DeepCopy(), item.b.DeepCopy()
 		a.AsDec()
 		if cmp := a.Cmp(b); cmp != item.cmp {
 			t.Errorf("%#v: unexpected Cmp: %d", item, cmp)
@@ -582,7 +586,7 @@ func TestQuantityCmpInt64AndDec(t *testing.T) {
 	}
 
 	for _, item := range table {
-		a, b := *item.a.Copy(), *item.b.Copy()
+		a, b := item.a.DeepCopy(), item.b.DeepCopy()
 		b.AsDec()
 		if cmp := a.Cmp(b); cmp != item.cmp {
 			t.Errorf("%#v: unexpected Cmp: %d", item, cmp)
@@ -593,7 +597,7 @@ func TestQuantityCmpInt64AndDec(t *testing.T) {
 	}
 
 	for _, item := range table {
-		a, b := *item.a.Copy(), *item.b.Copy()
+		a, b := item.a.DeepCopy(), item.b.DeepCopy()
 		a.AsDec()
 		b.AsDec()
 		if cmp := a.Cmp(b); cmp != item.cmp {
@@ -615,7 +619,7 @@ func TestQuantityNeg(t *testing.T) {
 	}
 
 	for i, item := range table {
-		out := *item.a.Copy()
+		out := item.a.DeepCopy()
 		out.Neg()
 		if out.Cmp(item.a) == 0 {
 			t.Errorf("%d: negating an item should not mutate the source: %s", i, out.String())
@@ -798,6 +802,34 @@ var fuzzer = fuzz.New().Funcs(
 		dec.SetUnscaled(c.Int63n(1000))
 	},
 )
+
+func TestQuantityDeepCopy(t *testing.T) {
+	// Test when d is nil
+	slice := []string{"0", "100m", "50m", "10000T"}
+	for _, testCase := range slice {
+		q := MustParse(testCase)
+		if result := q.DeepCopy(); result != q {
+			t.Errorf("Expected: %v, Actual: %v", q, result)
+		}
+	}
+	table := []*inf.Dec{
+		dec(0, 0).Dec,
+		dec(10, 0).Dec,
+		dec(-10, 0).Dec,
+	}
+	// Test when i is {0,0}
+	for _, testCase := range table {
+		q := Quantity{d: infDecAmount{testCase}, Format: DecimalSI}
+		result := q.DeepCopy()
+		if q.d.Cmp(result.AsDec()) != 0 {
+			t.Errorf("Expected: %v, Actual: %v", q.String(), result.String())
+		}
+		result = Quantity{d: infDecAmount{dec(2, 0).Dec}, Format: DecimalSI}
+		if q.d.Cmp(result.AsDec()) == 0 {
+			t.Errorf("Modifying result has affected q")
+		}
+	}
+}
 
 func TestJSON(t *testing.T) {
 	for i := 0; i < 500; i++ {
@@ -992,6 +1024,7 @@ func TestScaledValue(t *testing.T) {
 		{0, Micro, 1000 * 1000},
 		{0, Milli, 1000},
 		{0, 0, 1},
+		{2, -2, 100 * 100},
 	}
 
 	for _, item := range table {
@@ -1007,32 +1040,17 @@ func TestUninitializedNoCrash(t *testing.T) {
 
 	q.Value()
 	q.MilliValue()
-	q.Copy()
+	q.DeepCopy()
 	_ = q.String()
 	q.MarshalJSON()
 }
 
-func TestCopy(t *testing.T) {
+func TestDeepCopy(t *testing.T) {
 	q := NewQuantity(5, DecimalSI)
-	c := q.Copy()
+	c := q.DeepCopy()
 	c.Set(6)
 	if q.Value() == 6 {
 		t.Errorf("Copy didn't")
-	}
-}
-
-func TestQFlagSet(t *testing.T) {
-	qf := qFlag{&Quantity{}}
-	qf.Set("1Ki")
-	if e, a := "1Ki", qf.String(); e != a {
-		t.Errorf("Unexpected result %v != %v", e, a)
-	}
-}
-
-func TestQFlagIsPFlag(t *testing.T) {
-	var pfv pflag.Value = qFlag{}
-	if e, a := "quantity", pfv.Type(); e != a {
-		t.Errorf("Unexpected result %v != %v", e, a)
 	}
 }
 
@@ -1074,7 +1092,7 @@ func TestNeg(t *testing.T) {
 	}
 
 	for i, test := range tests {
-		a := test.a.Copy()
+		a := test.a.DeepCopy()
 		a.Neg()
 		// ensure value is same
 		if a.Cmp(test.expected) != 0 {
@@ -1149,7 +1167,7 @@ func TestNegateRoundTrip(t *testing.T) {
 					q.AsDec()
 				}
 
-				b := q.Copy()
+				b := q.DeepCopy()
 				b.Neg()
 				b.Neg()
 				if b.Cmp(q) != 0 {
@@ -1299,7 +1317,7 @@ func BenchmarkQuantityCopy(b *testing.B) {
 	values := benchmarkQuantities()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		values[i%len(values)].Copy()
+		values[i%len(values)].DeepCopy()
 	}
 	b.StopTimer()
 }

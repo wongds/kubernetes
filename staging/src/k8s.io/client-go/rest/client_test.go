@@ -17,27 +17,28 @@ limitations under the License.
 package rest
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"reflect"
 	"testing"
 	"time"
 
-	"fmt"
-
+	v1 "k8s.io/api/core/v1"
+	v1beta1 "k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/diff"
-	"k8s.io/client-go/pkg/api"
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	utiltesting "k8s.io/client-go/util/testing"
 
-	_ "k8s.io/client-go/pkg/api/install"
+	"github.com/google/go-cmp/cmp"
 )
 
 type TestParam struct {
@@ -50,20 +51,23 @@ type TestParam struct {
 	testBodyErrorIsNotNil bool
 }
 
-// TestSerializer makes sure that you're always able to decode an unversioned API object
+// TestSerializer makes sure that you're always able to decode metav1.Status
 func TestSerializer(t *testing.T) {
+	gv := v1beta1.SchemeGroupVersion
 	contentConfig := ContentConfig{
 		ContentType:          "application/json",
-		GroupVersion:         &schema.GroupVersion{Group: "other", Version: runtime.APIVersionInternal},
-		NegotiatedSerializer: api.Codecs,
+		GroupVersion:         &gv,
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
 	}
 
-	serializer, err := createSerializers(contentConfig)
+	n := runtime.NewClientNegotiator(contentConfig.NegotiatedSerializer, gv)
+	d, err := n.Decoder("application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	// bytes based on actual return from API server when encoding an "unversioned" object
-	obj, err := runtime.Decode(serializer.Decoder, []byte(`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Success"}`))
+	obj, err := runtime.Decode(d, []byte(`{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Success"}`))
 	t.Log(obj)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +82,7 @@ func TestDoRequestSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	body, err := c.Get().Prefix("test").Do().Raw()
+	body, err := c.Get().Prefix("test").Do(context.Background()).Raw()
 
 	testParam := TestParam{actualError: err, expectingError: false, expCreated: true,
 		expStatus: status, testBody: true, testBodyErrorIsNotNil: false}
@@ -93,7 +97,7 @@ func TestDoRequestFailed(t *testing.T) {
 		Message: " \"\" not found",
 		Details: &metav1.StatusDetails{},
 	}
-	expectedBody, _ := runtime.Encode(api.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
+	expectedBody, _ := runtime.Encode(scheme.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
 	fakeHandler := utiltesting.FakeHandler{
 		StatusCode:   404,
 		ResponseBody: string(expectedBody),
@@ -106,7 +110,7 @@ func TestDoRequestFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	err = c.Get().Do().Error()
+	err = c.Get().Do(context.Background()).Error()
 	if err == nil {
 		t.Errorf("unexpected non-error")
 	}
@@ -132,7 +136,7 @@ func TestDoRawRequestFailed(t *testing.T) {
 			},
 		},
 	}
-	expectedBody, _ := runtime.Encode(api.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
+	expectedBody, _ := runtime.Encode(scheme.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
 	fakeHandler := utiltesting.FakeHandler{
 		StatusCode:   404,
 		ResponseBody: string(expectedBody),
@@ -145,7 +149,7 @@ func TestDoRawRequestFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	body, err := c.Get().Do().Raw()
+	body, err := c.Get().Do(context.Background()).Raw()
 
 	if err == nil || body == nil {
 		t.Errorf("unexpected non-error: %#v", body)
@@ -169,7 +173,7 @@ func TestDoRequestCreated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	created := false
-	body, err := c.Get().Prefix("test").Do().WasCreated(&created).Raw()
+	body, err := c.Get().Prefix("test").Do(context.Background()).WasCreated(&created).Raw()
 
 	testParam := TestParam{actualError: err, expectingError: false, expCreated: true,
 		expStatus: status, testBody: false}
@@ -184,7 +188,7 @@ func TestDoRequestNotCreated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	created := false
-	body, err := c.Get().Prefix("test").Do().WasCreated(&created).Raw()
+	body, err := c.Get().Prefix("test").Do(context.Background()).WasCreated(&created).Raw()
 	testParam := TestParam{actualError: err, expectingError: false, expCreated: false,
 		expStatus: expectedStatus, testBody: false}
 	validate(testParam, t, body, fakeHandler)
@@ -199,7 +203,7 @@ func TestDoRequestAcceptedNoContentReturned(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	created := false
-	body, err := c.Get().Prefix("test").Do().WasCreated(&created).Raw()
+	body, err := c.Get().Prefix("test").Do(context.Background()).WasCreated(&created).Raw()
 	testParam := TestParam{actualError: err, expectingError: false, expCreated: false,
 		testBody: false}
 	validate(testParam, t, body, fakeHandler)
@@ -213,7 +217,7 @@ func TestBadRequest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	created := false
-	body, err := c.Get().Prefix("test").Do().WasCreated(&created).Raw()
+	body, err := c.Get().Prefix("test").Do(context.Background()).WasCreated(&created).Raw()
 	testParam := TestParam{actualError: err, expectingError: true, expCreated: false,
 		testBody: true}
 	validate(testParam, t, body, fakeHandler)
@@ -231,12 +235,13 @@ func validate(testParam TestParam, t *testing.T, body []byte, fakeHandler *utilt
 			t.Errorf("Expected object not to be created")
 		}
 	}
-	statusOut, err := runtime.Decode(api.Codecs.LegacyCodec(v1.SchemeGroupVersion), body)
+	statusOut, err := runtime.Decode(scheme.Codecs.UniversalDeserializer(), body)
 	if testParam.testBody {
-		if testParam.testBodyErrorIsNotNil {
-			if err == nil {
-				t.Errorf("Expected Error")
-			}
+		if testParam.testBodyErrorIsNotNil && err == nil {
+			t.Errorf("Expected Error")
+		}
+		if !testParam.testBodyErrorIsNotNil && err != nil {
+			t.Errorf("Unexpected Error: %v", err)
 		}
 	}
 
@@ -245,11 +250,11 @@ func validate(testParam TestParam, t *testing.T, body []byte, fakeHandler *utilt
 			t.Errorf("Unexpected mis-match. Expected %#v.  Saw %#v", testParam.expStatus, statusOut)
 		}
 	}
-	fakeHandler.ValidateRequest(t, "/"+api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()+"/test", "GET", nil)
+	fakeHandler.ValidateRequest(t, "/"+v1.SchemeGroupVersion.String()+"/test", "GET", nil)
 
 }
 
-func TestHttpMethods(t *testing.T) {
+func TestHTTPMethods(t *testing.T) {
 	testServer, _, _ := testServerEnv(t, 200)
 	defer testServer.Close()
 	c, _ := restClient(testServer)
@@ -280,6 +285,57 @@ func TestHttpMethods(t *testing.T) {
 	}
 }
 
+func TestHTTPProxy(t *testing.T) {
+	ctx := context.Background()
+	testServer, fh, _ := testServerEnv(t, 200)
+	fh.ResponseBody = "backend data"
+	defer testServer.Close()
+
+	testProxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		to, err := url.Parse(req.RequestURI)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		w.Write([]byte("proxied: "))
+		httputil.NewSingleHostReverseProxy(to).ServeHTTP(w, req)
+	}))
+	defer testProxyServer.Close()
+
+	t.Logf(testProxyServer.URL)
+
+	u, err := url.Parse(testProxyServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse test proxy server url: %v", err)
+	}
+
+	c, err := RESTClientFor(&Config{
+		Host: testServer.URL,
+		ContentConfig: ContentConfig{
+			GroupVersion:         &v1.SchemeGroupVersion,
+			NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		},
+		Proxy:    http.ProxyURL(u),
+		Username: "user",
+		Password: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	request := c.Get()
+	if request == nil {
+		t.Fatalf("Get: Object returned should not be nil")
+	}
+
+	b, err := request.DoRaw(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got, want := string(b), "proxied: backend data"; !cmp.Equal(got, want) {
+		t.Errorf("unexpected body: %v", cmp.Diff(want, got))
+	}
+}
+
 func TestCreateBackoffManager(t *testing.T) {
 
 	theUrl, _ := url.Parse("http://localhost")
@@ -301,7 +357,7 @@ func TestCreateBackoffManager(t *testing.T) {
 	backoff.UpdateBackoff(theUrl, nil, 500)
 	backoff = readExpBackoffConfig()
 	if backoff.CalculateBackoff(theUrl)/time.Second != 0 {
-		t.Errorf("Zero backoff duration, but backoff still occuring.")
+		t.Errorf("Zero backoff duration, but backoff still occurring.")
 	}
 
 	// No env -> No backoff.
@@ -317,8 +373,8 @@ func TestCreateBackoffManager(t *testing.T) {
 }
 
 func testServerEnv(t *testing.T, statusCode int) (*httptest.Server, *utiltesting.FakeHandler, *metav1.Status) {
-	status := &metav1.Status{Status: fmt.Sprintf("%s", metav1.StatusSuccess)}
-	expectedBody, _ := runtime.Encode(api.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
+	status := &metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Status: fmt.Sprintf("%s", metav1.StatusSuccess)}
+	expectedBody, _ := runtime.Encode(scheme.Codecs.LegacyCodec(v1.SchemeGroupVersion), status)
 	fakeHandler := utiltesting.FakeHandler{
 		StatusCode:   statusCode,
 		ResponseBody: string(expectedBody),
@@ -332,8 +388,8 @@ func restClient(testServer *httptest.Server) (*RESTClient, error) {
 	c, err := RESTClientFor(&Config{
 		Host: testServer.URL,
 		ContentConfig: ContentConfig{
-			GroupVersion:         &api.Registry.GroupOrDie(api.GroupName).GroupVersion,
-			NegotiatedSerializer: api.Codecs,
+			GroupVersion:         &v1.SchemeGroupVersion,
+			NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
 		},
 		Username: "user",
 		Password: "pass",

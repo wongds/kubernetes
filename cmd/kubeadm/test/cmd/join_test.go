@@ -18,31 +18,231 @@ package kubeadm
 
 import "testing"
 
-func TestCmdJoinConfig(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
+// kubeadmReset executes "kubeadm reset" and restarts kubelet.
+func kubeadmReset() error {
+	kubeadmPath := getKubeadmPath()
+	_, _, _, err := RunCmd(kubeadmPath, "reset")
+	return err
+}
 
+func TestCmdJoinConfig(t *testing.T) {
 	var initTest = []struct {
+		name     string
 		args     string
 		expected bool
 	}{
-		{"--config=foobar", false},
-		{"--config=/does/not/exist/foo/bar", false},
+		{"config", "--config=foobar", false},
+		{"config path", "--config=/does/not/exist/foo/bar", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinConfig running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinDiscoveryFile(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"valid discovery file", "--discovery-file=foobar", false},
+		{"invalid discovery file", "--discovery-file=file:wrong", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinDiscoveryFile running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinDiscoveryToken(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"valid discovery token", "--discovery-token=foobar", false},
+		{"valid discovery token url", "--discovery-token=token://asdf:asdf", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinDiscoveryToken running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinNodeName(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"valid node name", "--node-name=foobar", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinNodeName running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinTLSBootstrapToken(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"valid bootstrap token", "--tls-bootstrap-token=foobar", false},
+		{"valid bootstrap token url", "--tls-bootstrap-token=token://asdf:asdf", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinTLSBootstrapToken running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinToken(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"valid token", "--token=foobar", false},
+		{"valid token url", "--token=token://asdf:asdf", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinToken running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinBadArgs(t *testing.T) {
+	kubeadmPath := getKubeadmPath()
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"discovery-token and discovery-file can't both be set", "--discovery-token=abcdef.1234567890123456 --discovery-file=file:///tmp/foo.bar", false}, // DiscoveryToken, DiscoveryFile can't both be set
+		{"discovery-token or discovery-file must be set", "", false},                                                                                      // DiscoveryToken or DiscoveryFile must be set
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "join", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdJoinConfig running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinBadArgs 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
+	}
+}
+
+func TestCmdJoinArgsMixed(t *testing.T) {
+	var initTest = []struct {
+		name     string
+		args     string
+		expected bool
+	}{
+		{"discovery-token and config", "--discovery-token=abcdef.1234567890abcdef --config=/etc/kubernetes/kubeadm.config", false},
+	}
+
+	kubeadmPath := getKubeadmPath()
+	for _, rt := range initTest {
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, actual := RunCmd(kubeadmPath, "join", rt.args, "--ignore-preflight-errors=all")
+			if (actual == nil) != rt.expected {
+				t.Errorf(
+					"failed CmdJoinArgsMixed running 'kubeadm join %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
+					rt.args,
+					actual,
+					rt.expected,
+					(actual == nil),
+				)
+			}
+			kubeadmReset()
+		})
 	}
 }
