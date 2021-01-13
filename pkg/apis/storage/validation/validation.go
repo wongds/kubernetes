@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -392,10 +393,13 @@ func validateCSINodeDriver(driver storage.CSINodeDriver, driverNamesInSpecs sets
 	return allErrs
 }
 
+// ValidateCSIDriverName checks that a name is appropriate for a
+// CSIDriver object.
+var ValidateCSIDriverName = apimachineryvalidation.NameIsDNSSubdomain
+
 // ValidateCSIDriver validates a CSIDriver.
 func ValidateCSIDriver(csiDriver *storage.CSIDriver) field.ErrorList {
-	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, apivalidation.ValidateCSIDriverName(csiDriver.Name, field.NewPath("name"))...)
+	allErrs := apivalidation.ValidateObjectMeta(&csiDriver.ObjectMeta, false, ValidateCSIDriverName, field.NewPath("metadata"))
 
 	allErrs = append(allErrs, validateCSIDriverSpec(&csiDriver.Spec, field.NewPath("spec"))...)
 	return allErrs
@@ -403,7 +407,7 @@ func ValidateCSIDriver(csiDriver *storage.CSIDriver) field.ErrorList {
 
 // ValidateCSIDriverUpdate validates a CSIDriver.
 func ValidateCSIDriverUpdate(new, old *storage.CSIDriver) field.ErrorList {
-	allErrs := ValidateCSIDriver(new)
+	allErrs := apivalidation.ValidateObjectMetaUpdate(&new.ObjectMeta, &old.ObjectMeta, field.NewPath("metadata"))
 
 	// Spec is read-only
 	// If this ever relaxes in the future, make sure to increment the Generation number in PrepareForUpdate
@@ -421,6 +425,8 @@ func validateCSIDriverSpec(
 	allErrs = append(allErrs, validateAttachRequired(spec.AttachRequired, fldPath.Child("attachedRequired"))...)
 	allErrs = append(allErrs, validatePodInfoOnMount(spec.PodInfoOnMount, fldPath.Child("podInfoOnMount"))...)
 	allErrs = append(allErrs, validateStorageCapacity(spec.StorageCapacity, fldPath.Child("storageCapacity"))...)
+	allErrs = append(allErrs, validateFSGroupPolicy(spec.FSGroupPolicy, fldPath.Child("fsGroupPolicy"))...)
+	allErrs = append(allErrs, validateTokenRequests(spec.TokenRequests, fldPath.Child("tokenRequests"))...)
 	allErrs = append(allErrs, validateVolumeLifecycleModes(spec.VolumeLifecycleModes, fldPath.Child("volumeLifecycleModes"))...)
 	return allErrs
 }
@@ -450,6 +456,52 @@ func validateStorageCapacity(storageCapacity *bool, fldPath *field.Path) field.E
 	allErrs := field.ErrorList{}
 	if storageCapacity == nil && utilfeature.DefaultFeatureGate.Enabled(features.CSIStorageCapacity) {
 		allErrs = append(allErrs, field.Required(fldPath, ""))
+	}
+
+	return allErrs
+}
+
+var supportedFSGroupPolicy = sets.NewString(string(storage.ReadWriteOnceWithFSTypeFSGroupPolicy), string(storage.FileFSGroupPolicy), string(storage.NoneFSGroupPolicy))
+
+// validateFSGroupPolicy tests if FSGroupPolicy contains an appropriate value.
+func validateFSGroupPolicy(fsGroupPolicy *storage.FSGroupPolicy, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if fsGroupPolicy == nil {
+		// This is not a required field, so if nothing is provided simply return
+		return allErrs
+	}
+
+	if !supportedFSGroupPolicy.Has(string(*fsGroupPolicy)) {
+		allErrs = append(allErrs, field.NotSupported(fldPath, fsGroupPolicy, supportedFSGroupPolicy.List()))
+	}
+
+	return allErrs
+}
+
+// validateTokenRequests tests if the Audience in each TokenRequest are different.
+// Besides, at most one TokenRequest can ignore Audience.
+func validateTokenRequests(tokenRequests []storage.TokenRequest, fldPath *field.Path) field.ErrorList {
+	const min = 10 * time.Minute
+	allErrs := field.ErrorList{}
+	audiences := make(map[string]bool)
+	for i, tokenRequest := range tokenRequests {
+		path := fldPath.Index(i)
+		audience := tokenRequest.Audience
+		if _, ok := audiences[audience]; ok {
+			allErrs = append(allErrs, field.Duplicate(path.Child("audience"), audience))
+			continue
+		}
+		audiences[audience] = true
+
+		if tokenRequest.ExpirationSeconds == nil {
+			continue
+		}
+		if *tokenRequest.ExpirationSeconds < int64(min.Seconds()) {
+			allErrs = append(allErrs, field.Invalid(path.Child("expirationSeconds"), *tokenRequest.ExpirationSeconds, "may not specify a duration less than 10 minutes"))
+		}
+		if *tokenRequest.ExpirationSeconds > 1<<32 {
+			allErrs = append(allErrs, field.Invalid(path.Child("expirationSeconds"), *tokenRequest.ExpirationSeconds, "may not specify a duration larger than 2^32 seconds"))
+		}
 	}
 
 	return allErrs

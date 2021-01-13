@@ -25,10 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
-	"k8s.io/kubernetes/pkg/features"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/runtimeclass"
 	rctest "k8s.io/kubernetes/pkg/kubelet/runtimeclass/testing"
@@ -67,37 +64,29 @@ func TestGeneratePodSandboxLinuxConfigSeccomp(t *testing.T) {
 		expectedProfile string
 	}{
 		{
-			description:     "no seccomp defined at pod level should return empty",
-			pod:             newSeccompPod(nil, nil, "", ""),
-			expectedProfile: "",
+			description:     "no seccomp defined at pod level should return runtime/default",
+			pod:             newSeccompPod(nil, nil, "", "runtime/default"),
+			expectedProfile: "runtime/default",
 		},
 		{
-			description:     "seccomp field defined at pod level should be honoured",
-			pod:             newSeccompPod(&v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault}, nil, "", ""),
+			description:     "seccomp field defined at pod level should not be honoured",
+			pod:             newSeccompPod(&v1.SeccompProfile{Type: v1.SeccompProfileTypeUnconfined}, nil, "", ""),
 			expectedProfile: "runtime/default",
 		},
 		{
 			description:     "seccomp field defined at container level should not be honoured",
-			pod:             newSeccompPod(nil, &v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault}, "", ""),
-			expectedProfile: "",
+			pod:             newSeccompPod(nil, &v1.SeccompProfile{Type: v1.SeccompProfileTypeUnconfined}, "", ""),
+			expectedProfile: "runtime/default",
 		},
 		{
-			description:     "seccomp annotation defined at pod level should be honoured",
-			pod:             newSeccompPod(nil, nil, v1.SeccompProfileRuntimeDefault, ""),
+			description:     "seccomp annotation defined at pod level should not be honoured",
+			pod:             newSeccompPod(nil, nil, "unconfined", ""),
 			expectedProfile: "runtime/default",
 		},
 		{
 			description:     "seccomp annotation defined at container level should not be honoured",
-			pod:             newSeccompPod(nil, nil, "", v1.SeccompProfileRuntimeDefault),
-			expectedProfile: "",
-		},
-		{
-			description: "prioritise pod field over pod annotation",
-			pod: newSeccompPod(&v1.SeccompProfile{
-				Type:             v1.SeccompProfileTypeLocalhost,
-				LocalhostProfile: pointer.StringPtr("pod-field"),
-			}, nil, "localhost/pod-annotation", ""),
-			expectedProfile: "localhost/" + filepath.Join(fakeSeccompProfileRoot, "pod-field"),
+			pod:             newSeccompPod(nil, nil, "", "unconfined"),
+			expectedProfile: "runtime/default",
 		},
 	}
 
@@ -110,8 +99,6 @@ func TestGeneratePodSandboxLinuxConfigSeccomp(t *testing.T) {
 
 // TestCreatePodSandbox_RuntimeClass tests creating sandbox with RuntimeClasses enabled.
 func TestCreatePodSandbox_RuntimeClass(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.RuntimeClass, true)()
-
 	rcm := runtimeclass.NewManager(rctest.NewPopulatedClient())
 	defer rctest.StartManagerSync(rcm)()
 

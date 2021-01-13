@@ -17,7 +17,7 @@ limitations under the License.
 package v1beta1
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -53,7 +53,15 @@ func SetDefaults_CSIDriver(obj *storagev1beta1.CSIDriver) {
 		obj.Spec.StorageCapacity = new(bool)
 		*(obj.Spec.StorageCapacity) = false
 	}
+	if obj.Spec.FSGroupPolicy == nil && utilfeature.DefaultFeatureGate.Enabled(features.CSIVolumeFSGroupPolicy) {
+		obj.Spec.FSGroupPolicy = new(storagev1beta1.FSGroupPolicy)
+		*obj.Spec.FSGroupPolicy = storagev1beta1.ReadWriteOnceWithFSTypeFSGroupPolicy
+	}
 	if len(obj.Spec.VolumeLifecycleModes) == 0 && utilfeature.DefaultFeatureGate.Enabled(features.CSIInlineVolume) {
 		obj.Spec.VolumeLifecycleModes = append(obj.Spec.VolumeLifecycleModes, storagev1beta1.VolumeLifecyclePersistent)
+	}
+	if obj.Spec.RequiresRepublish == nil && utilfeature.DefaultFeatureGate.Enabled(features.CSIServiceAccountToken) {
+		obj.Spec.RequiresRepublish = new(bool)
+		*(obj.Spec.RequiresRepublish) = false
 	}
 }
